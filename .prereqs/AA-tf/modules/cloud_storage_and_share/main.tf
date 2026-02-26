@@ -36,6 +36,13 @@ resource "azurerm_storage_account" "my_sa" {
 #   depends_on      = [null_resource.enable_files_aad_auth]
 # }
 
+# Grant myself adequate permissions over the storage account (required to play with file CRUD)
+resource "azurerm_role_assignment" "myself_as_data_privileged_contributor" {
+  role_definition_name = "Storage File Data Privileged Contributor"
+  scope                = azurerm_storage_account.my_sa.id
+  principal_id         = data.azurerm_client_config.current_azrm_config.object_id
+}
+
 # Azure File Share
 resource "azurerm_storage_share" "my_safs" {
   name               = "${var.workload_nickname}storacctfs"
@@ -59,80 +66,80 @@ resource "azurerm_role_assignment" "myself_as_data_smb_contributor" {
   principal_id         = data.azurerm_client_config.current_azrm_config.object_id
 }
 
-# # Azure Storage Sync Service
-resource "azapi_resource" "my_sss" {
-  type      = "Microsoft.StorageSync/storageSyncServices@2022-09-01"
-  name      = "${var.workload_nickname}sssvc"
-  parent_id = var.resource_group.id
-  identity {
-    type = "SystemAssigned"
-  }
-  location = var.resource_group.location
-  body = {
-    properties = {
-      useIdentity = true
-    }
-  }
-}
-
-# # Azure Storage Sync Service
-# resource "azurerm_storage_sync" "my_sss" {
-#   name                = "${var.workload_nickname}sssvc"
-#   location            = var.resource_group.location
-#   resource_group_name = var.resource_group.name
-# }
-
-# # Custom role
-# resource "azurerm_role_definition" "my_custom_role" {
-#   name        = "Storage Sync Service Server Registrar (custom)"
-#   scope       = var.resource_group.id
-#   description = "Grants the minimum required permissions for a human sysadmin, logged into a Windows server that has the Azure File Sync agent installed, to register that server with a given Azure Storage Sync Service resource."
-#   permissions {
-#     actions = [
-#       "Microsoft.StorageSync/storageSyncServices/registeredServers/write",
-#       "Microsoft.StorageSync/storageSyncServices/read",
-#       "Microsoft.StorageSync/storageSyncServices/workflows/read",
-#       "Microsoft.StorageSync/storageSyncServices/workflows/operations/read"
-#     ]
-#     not_actions      = []
-#     data_actions     = []
-#     not_data_actions = []
+# # # Azure Storage Sync Service
+# resource "azapi_resource" "my_sss" {
+#   type      = "Microsoft.StorageSync/storageSyncServices@2022-09-01"
+#   name      = "${var.workload_nickname}sssvc"
+#   parent_id = var.resource_group.id
+#   identity {
+#     type = "SystemAssigned"
 #   }
-#   assignable_scopes = [
-#     var.resource_group.id
-#   ]
+#   location = var.resource_group.location
+#   body = {
+#     properties = {
+#       useIdentity = true
+#     }
+#   }
 # }
 
-# Grant myself adequate permissions over the storage sync service to register a server
-# resource "azurerm_role_assignment" "myself_as_sync_registrar" {
-#   role_definition_id = azurerm_role_definition.my_custom_role.role_definition_id
-#   scope              = azapi_resource.my_sss.output.id
-#   principal_id       = data.azurerm_client_config.current_azrm_config.object_id
+# # # Azure Storage Sync Service
+# # resource "azurerm_storage_sync" "my_sss" {
+# #   name                = "${var.workload_nickname}sssvc"
+# #   location            = var.resource_group.location
+# #   resource_group_name = var.resource_group.name
+# # }
+
+# # # Custom role
+# # resource "azurerm_role_definition" "my_custom_role" {
+# #   name        = "Storage Sync Service Server Registrar (custom)"
+# #   scope       = var.resource_group.id
+# #   description = "Grants the minimum required permissions for a human sysadmin, logged into a Windows server that has the Azure File Sync agent installed, to register that server with a given Azure Storage Sync Service resource."
+# #   permissions {
+# #     actions = [
+# #       "Microsoft.StorageSync/storageSyncServices/registeredServers/write",
+# #       "Microsoft.StorageSync/storageSyncServices/read",
+# #       "Microsoft.StorageSync/storageSyncServices/workflows/read",
+# #       "Microsoft.StorageSync/storageSyncServices/workflows/operations/read"
+# #     ]
+# #     not_actions      = []
+# #     data_actions     = []
+# #     not_data_actions = []
+# #   }
+# #   assignable_scopes = [
+# #     var.resource_group.id
+# #   ]
+# # }
+
+# # Grant myself adequate permissions over the storage sync service to register a server
+# # resource "azurerm_role_assignment" "myself_as_sync_registrar" {
+# #   role_definition_id = azurerm_role_definition.my_custom_role.role_definition_id
+# #   scope              = azapi_resource.my_sss.output.id
+# #   principal_id       = data.azurerm_client_config.current_azrm_config.object_id
+# # }
+
+# # Grant the storage sync service adequate permissions over the Storage Account (required to create a Cloud Endpoint)
+# # https://learn.microsoft.com/en-us/troubleshoot/azure/azure-storage/files/file-sync
+# #    /file-sync-troubleshoot-managed-identities#permissions-required-to-access-a-storage-account-and-azure-file-share
+# resource "azurerm_role_assignment" "sync_as_contributor_to_sa" {
+#   role_definition_name = "Storage Account Contributor"
+#   scope                = azurerm_storage_account.my_sa.id
+#   principal_id         = azapi_resource.my_sss.output.identity.principalId
 # }
 
-# Grant the storage sync service adequate permissions over the Storage Account (required to create a Cloud Endpoint)
-# https://learn.microsoft.com/en-us/troubleshoot/azure/azure-storage/files/file-sync
-#    /file-sync-troubleshoot-managed-identities#permissions-required-to-access-a-storage-account-and-azure-file-share
-resource "azurerm_role_assignment" "sync_as_contributor_to_sa" {
-  role_definition_name = "Storage Account Contributor"
-  scope                = azurerm_storage_account.my_sa.id
-  principal_id         = azapi_resource.my_sss.output.identity.principalId
-}
+# # Grant the storage sync service adequate permissions over the File Share (required to create a Cloud Endpoint)
+# # https://learn.microsoft.com/en-us/troubleshoot/azure/azure-storage/files/file-sync
+# #    /file-sync-troubleshoot-managed-identities#permissions-required-to-access-a-storage-account-and-azure-file-share
+# resource "azurerm_role_assignment" "sync_as_data_contributor_to_safs" {
+#   role_definition_name = "Storage File Data Privileged Contributor"
+#   scope                = azurerm_storage_share.my_safs.id
+#   principal_id         = azapi_resource.my_sss.output.identity.principalId
+# }
 
-# Grant the storage sync service adequate permissions over the File Share (required to create a Cloud Endpoint)
-# https://learn.microsoft.com/en-us/troubleshoot/azure/azure-storage/files/file-sync
-#    /file-sync-troubleshoot-managed-identities#permissions-required-to-access-a-storage-account-and-azure-file-share
-resource "azurerm_role_assignment" "sync_as_data_contributor_to_safs" {
-  role_definition_name = "Storage File Data Privileged Contributor"
-  scope                = azurerm_storage_share.my_safs.id
-  principal_id         = azapi_resource.my_sss.output.identity.principalId
-}
-
-# Azure Storage Sync Group
-resource "azurerm_storage_sync_group" "my_ssgrp" {
-  name            = "${var.workload_nickname}ssgrp"
-  storage_sync_id = azapi_resource.my_sss.output.id
-}
+# # Azure Storage Sync Group
+# resource "azurerm_storage_sync_group" "my_ssgrp" {
+#   name            = "${var.workload_nickname}ssgrp"
+#   storage_sync_id = azapi_resource.my_sss.output.id
+# }
 
 # # Azure Storage Sync Cloud Endpoint
 # # This seems to like to "MgmtForbidden2" / "Failed to provision a replica group." out 
