@@ -1,4 +1,9 @@
-Describe "Basic file share operations work by UNC" {
+# IMPORTANT:  Make sure one or the other of these is skipped, 
+# until I get around to putting them together gracefully, 
+# or I might end up with UNC conflicts due to parallelism.
+# TODO.
+
+Describe "Basic file share operations work by UNC" -Skip {
     BeforeAll {
         $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
         $gallery_path = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_SHAREPATH") | .attributes.value' $tfstate_file) # UNC of format "\\fqdn\subfolder"
@@ -289,6 +294,73 @@ Describe "Basic file share operations work by UNC" {
         $storage_account_key = $null
         $storage_account_name = $null
         $storage_share_name = $null
+        Write-Host("Finished cleanup")
+    }
+}
+
+Describe "I can, via UNC, see at least 1 version of my PowerShell module" {
+    BeforeAll {
+        $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
+        $gallery_path = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_SHAREPATH") | .attributes.value' $tfstate_file)
+        $storage_account_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_NAME") | .attributes.value' $tfstate_file)
+        $storage_account_key = az storage account keys list `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --resource-group "$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))-rg-demo" `
+            --account-name $storage_account_name `
+            --query '[0].value' `
+            --output 'tsv'
+        $net_use_server = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[0]
+        $existing_net_use_line = net use | Where-Object { $_ -match [regex]::Escape($gallery_path) } | Select-Object -First 1
+        if ($existing_net_use_line -and $existing_net_use_line -match '([A-Z]):') {
+            $net_use_drive_letter = $Matches[1] + ':'
+            Write-Host("Reusing existing net use drive letter: $net_use_drive_letter")
+        }
+        else {
+            cmdkey /delete:$net_use_server 2>$null | Out-Null
+            cmdkey /add:$net_use_server /user:"Azure\$storage_account_name" /pass:$storage_account_key | Out-Null
+            $net_use_output = net use * "$gallery_path"
+            $net_use_drive_letter = ($net_use_output | Where-Object { $_ -match '([A-Z]):' } | Select-Object -First 1) -replace '^.*?([A-Z]:).*$', '$1'
+            Write-Host("Drive letter is: $net_use_drive_letter")
+        }
+        $module_name = 'HelloWorld'
+        $module_share_subfolder = 'ps-modules-gallery'
+        $module_unc_gallery_path = Join-Path $gallery_path $module_share_subfolder
+        $module_unc_gallery_nickname = 'VerifyUncGallery'
+        Write-Host("Module UNC gallery path: $module_unc_gallery_path")
+        try { Unregister-PSRepository -Name $module_unc_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+        Register-PSRepository `
+            -Name $module_unc_gallery_nickname `
+            -SourceLocation $module_unc_gallery_path `
+            -PublishLocation $module_unc_gallery_path `
+            -InstallationPolicy 'Trusted'
+        Write-Host("Registered $module_unc_gallery_nickname")
+    }
+    It "should find at least 1 version of HelloWorld in the UNC gallery" {
+        $found = Find-Module -Name $module_name -Repository $module_unc_gallery_nickname -AllVersions
+        $found | Should -Not -BeNullOrEmpty
+        $found.Count | Should -BeGreaterOrEqual 1
+        Write-Host("Found $($found.Count) version(s): $($found.Version -join ', ')")
+    }
+    AfterAll {
+        try { Unregister-PSRepository -Name $module_unc_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+        Write-Host("Unregistered $module_unc_gallery_nickname")
+        if ($net_use_drive_letter) {
+            net use $net_use_drive_letter /delete
+        }
+        if ($net_use_server) {
+            cmdkey /delete:$net_use_server 2>$null | Out-Null
+        }
+        $net_use_drive_letter = $null
+        $net_use_server = $null
+        $net_use_output = $null
+        $tfstate_file = $null
+        $gallery_path = $null
+        $storage_account_name = $null
+        $storage_account_key = $null
+        $module_name = $null
+        $module_share_subfolder = $null
+        $module_unc_gallery_path = $null
+        $module_unc_gallery_nickname = $null
         Write-Host("Finished cleanup")
     }
 }
