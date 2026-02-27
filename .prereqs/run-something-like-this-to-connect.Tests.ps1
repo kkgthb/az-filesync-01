@@ -1,14 +1,15 @@
 Describe "Basic file share operations work by UNC" {
     BeforeAll {
-        $storage_account_name = "$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))storacct"
+        $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
+        $gallery_path = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_SHAREPATH") | .attributes.value' $tfstate_file) # UNC of format "\\fqdn\subfolder"
+        $storage_account_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_NAME") | .attributes.value' $tfstate_file)
         $storage_account_key = az storage account keys list `
             --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
             --resource-group "$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))-rg-demo" `
             --account-name $storage_account_name `
             --query '[0].value' `
             --output 'tsv'
-        $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
-        $gallery_path = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_SHAREPATH") | .attributes.value' $tfstate_file) # UNC of format "\\fqdn\subfolder"
+        $storage_share_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_SHARE_NAME") | .attributes.value' $tfstate_file)
         Write-Host("Gallery path is:  $gallery_path")
         $net_use_server = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[0]
         $existing_net_use_line = net use | Where-Object { $_ -match [regex]::Escape($gallery_path) } | Select-Object -First 1
@@ -30,17 +31,17 @@ Describe "Basic file share operations work by UNC" {
     It "should be reachable as a UNC path" {
         Test-Path $gallery_path | Should -BeTrue
     }
-    It "should allow listing contents" {
+    It "should allow listing contents via UNC" {
         { Get-ChildItem $gallery_path } | Should -Not -Throw
     }
-    It "should allow creating and deleting a file" {
+    It "should allow creating and deleting a file via UNC" {
         $testFile = Join-Path $gallery_path 'testfile.txt'
         Set-Content -Path $testFile -Value 'test' -Force
         Test-Path $testFile | Should -BeTrue
         Remove-Item $testFile -Force
         Test-Path $testFile | Should -BeFalse
     }
-    Describe "PowerShell should work too" {
+    Describe "PowerShell should work via UNC too" {
         BeforeAll {
             $ps_gallery_nickname = 'TfTestGallery'
             Write-Host("Before registering a new repository, there are $((Get-PSRepository).Length) repositories")
@@ -79,19 +80,16 @@ Describe "Basic file share operations work by UNC" {
     }
     Describe "REST upload via az storage file upload-batch is visible over UNC" {
         BeforeAll {
-            $az_upload_share_name = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[1]
             $az_upload_test_subfolder = 'az-upload-test'
             $az_upload_test_filename = "az-rest-upload-$(Get-Date -Format 'yyyyMMddHHmmss').txt"
             $az_upload_local_dir = Join-Path $env:TEMP 'az-upload-test-source'
             New-Item -ItemType Directory -Force -Path $az_upload_local_dir | Out-Null
             $az_upload_local_file = Join-Path $az_upload_local_dir $az_upload_test_filename
             Set-Content -Path $az_upload_local_file -Value "Uploaded via az storage file upload-batch at $(Get-Date -Format 'o')" -Force
-            # Parse share name from UNC path: \\server\share -> last non-empty segment
-            Write-Host("Share name parsed from UNC: $az_upload_share_name")
             az storage file upload-batch `
                 --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
                 --account-name $storage_account_name `
-                --destination $az_upload_share_name `
+                --destination $storage_share_name `
                 --destination-path $az_upload_test_subfolder `
                 --source $az_upload_local_dir `
                 --backup-intent `
@@ -123,7 +121,6 @@ Describe "Basic file share operations work by UNC" {
             $az_upload_test_filename = $null
             $az_upload_local_dir = $null
             $az_upload_local_file = $null
-            $az_upload_share_name = $null
             Write-Host("Finished az upload test cleanup")
         }
     }
@@ -140,7 +137,6 @@ Describe "Basic file share operations work by UNC" {
             $module_local_gallery_nickname = 'LocalTempGallery'
             $module_unc_gallery_nickname = 'UncTempGallery'
             $module_unc_gallery_path = Join-Path $gallery_path $module_share_subfolder
-            $module_share_name = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[1]
 
             # Ensure ModuleBuilder is installed
             if (-not (Get-Module -Name 'ModuleBuilder' -ListAvailable)) {
@@ -187,11 +183,11 @@ Describe "Basic file share operations work by UNC" {
             # DirectoryNotFoundException even though the REST upload succeeded.
             New-Item -ItemType Directory -Force -Path $module_unc_gallery_path | Out-Null
             Write-Host("Pre-created UNC gallery subfolder: $module_unc_gallery_path")
-            Write-Host("Uploading nupkg files to share '$module_share_name' under path '$module_share_subfolder' ...")
+            Write-Host("Uploading nupkg files to share '$storage_share_name' under path '$module_share_subfolder' ...")
             az storage file upload-batch `
                 --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
                 --account-name $storage_account_name `
-                --destination $module_share_name `
+                --destination $storage_share_name `
                 --destination-path $module_share_subfolder `
                 --source $module_local_gallery_dir `
                 --backup-intent `
@@ -254,7 +250,8 @@ Describe "Basic file share operations work by UNC" {
             Write-Host("Uninstalled $module_name")
             if (Get-Command 'Get-Greeting' -ErrorAction SilentlyContinue) {
                 Write-Warning("Get-Greeting still present after uninstall!")
-            } else {
+            }
+            else {
                 Write-Host("Confirmed: Get-Greeting command is gone")
             }
             # Remove the share gallery subfolder via UNC
@@ -274,7 +271,6 @@ Describe "Basic file share operations work by UNC" {
             $module_local_gallery_nickname = $null
             $module_unc_gallery_nickname = $null
             $module_unc_gallery_path = $null
-            $module_share_name = $null
             Write-Host("Finished module build/publish/install test cleanup")
         }
     }
@@ -292,6 +288,7 @@ Describe "Basic file share operations work by UNC" {
         $gallery_path = $null
         $storage_account_key = $null
         $storage_account_name = $null
+        $storage_share_name = $null
         Write-Host("Finished cleanup")
     }
 }
