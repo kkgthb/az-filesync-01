@@ -10,13 +10,19 @@ Describe "Basic file share operations work by UNC" {
         $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
         $gallery_path = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_SHAREPATH") | .attributes.value' $tfstate_file) # UNC of format "\\fqdn\subfolder"
         Write-Host("Gallery path is:  $gallery_path")
+        $net_use_server = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[0]
         $existing_net_use_line = net use | Where-Object { $_ -match [regex]::Escape($gallery_path) } | Select-Object -First 1
         if ($existing_net_use_line -and $existing_net_use_line -match '([A-Z]):') {
             $net_use_drive_letter = $Matches[1] + ':'
             Write-Host("Reusing existing net use drive letter: $net_use_drive_letter")
         }
         else {
-            $net_use_output = net use * "$gallery_path" "/user:Azure\$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))storacct" $storage_account_key
+            # Use cmdkey to install the credential before net use (no /user: inline).
+            # This prevents error 1219 caused by competing OAuth/HTTPS sessions that
+            # AZ CLI may have left on the same hostname.
+            cmdkey /delete:$net_use_server 2>$null | Out-Null
+            cmdkey /add:$net_use_server /user:"Azure\$storage_account_name" /pass:$storage_account_key | Out-Null
+            $net_use_output = net use * "$gallery_path"
             $net_use_drive_letter = ($net_use_output | Where-Object { $_ -match '([A-Z]):' } | Select-Object -First 1) -replace '^.*?([A-Z]:).*$', '$1'
             Write-Host("Drive letter is:  $net_use_drive_letter")
         }
@@ -121,9 +127,166 @@ Describe "Basic file share operations work by UNC" {
             Write-Host("Finished az upload test cleanup")
         }
     }
+    Describe "Can build a real PowerShell module and install it from the Azure Files share via UNC" {
+        BeforeAll {
+            $module_build_version = "$(Get-Date -Format 'yyyy').$(Get-Date -Format 'MMdd').$(Get-Date -Format 'HHmm')"
+            $module_name = 'HelloWorld'
+            $module_source_psd1 = [System.IO.Path]::GetFullPath(
+                [System.IO.Path]::Combine($PSScriptRoot, '..', '..', 'powershell-module-01-tiny', 'src', 'all_my_modules', 'HelloWorld', 'HelloWorld.psd1')
+            )
+            $module_build_output_dir = Join-Path $env:TEMP 'ps-module-build-output'
+            $module_local_gallery_dir = Join-Path $env:TEMP 'ps-module-local-gallery'
+            $module_share_subfolder = 'ps-modules-gallery'
+            $module_local_gallery_nickname = 'LocalTempGallery'
+            $module_unc_gallery_nickname = 'UncTempGallery'
+            $module_unc_gallery_path = Join-Path $gallery_path $module_share_subfolder
+            $module_share_name = ($gallery_path -split '\\' | Where-Object { $_ -ne '' })[1]
+
+            # Ensure ModuleBuilder is installed
+            if (-not (Get-Module -Name 'ModuleBuilder' -ListAvailable)) {
+                Write-Host("Installing ModuleBuilder from PSGallery ...")
+                Install-Module -Name 'ModuleBuilder' -Repository 'PSGallery' -Scope 'CurrentUser' -Force
+            }
+
+            # Fresh build output and local gallery dirs
+            if (Test-Path $module_build_output_dir) { Remove-Item $module_build_output_dir -Recurse -Force }
+            if (Test-Path $module_local_gallery_dir) { Remove-Item $module_local_gallery_dir -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $module_build_output_dir | Out-Null
+            New-Item -ItemType Directory -Force -Path $module_local_gallery_dir | Out-Null
+
+            # Build the module into a versioned output folder
+            Write-Host("Building $module_name v$module_build_version from: $module_source_psd1")
+            Build-Module `
+                -SourcePath $module_source_psd1 `
+                -OutputDirectory $module_build_output_dir `
+                -VersionedOutputDirectory `
+                -Version $module_build_version
+            $built_module_dir = (Get-ChildItem -Path (Join-Path $module_build_output_dir $module_name) -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+            Write-Host("Built module directory: $built_module_dir")
+
+            # Register LocalTempGallery, publish the built module into it, then unregister
+            try { Unregister-PSRepository -Name $module_local_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+            Register-PSRepository `
+                -Name $module_local_gallery_nickname `
+                -SourceLocation $module_local_gallery_dir `
+                -PublishLocation $module_local_gallery_dir `
+                -InstallationPolicy 'Trusted'
+            Write-Host("Registered $module_local_gallery_nickname at $module_local_gallery_dir; publishing ...")
+            Publish-Module `
+                -Path $built_module_dir `
+                -Repository $module_local_gallery_nickname `
+                -NuGetApiKey 'ignored' `
+                -Force
+            Write-Host("Published to $module_local_gallery_nickname; nupkg files: $(Get-ChildItem $module_local_gallery_dir -Filter '*.nupkg' | Select-Object -ExpandProperty Name)")
+            try { Unregister-PSRepository -Name $module_local_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+            Write-Host("Unregistered $module_local_gallery_nickname")
+
+            # Upload nupkg files to the Azure Files share under a dedicated subfolder
+            # Pre-create the subfolder via UNC (SMB) so Windows' directory cache knows
+            # about it before we populate it via REST; otherwise Install-Module gets
+            # DirectoryNotFoundException even though the REST upload succeeded.
+            New-Item -ItemType Directory -Force -Path $module_unc_gallery_path | Out-Null
+            Write-Host("Pre-created UNC gallery subfolder: $module_unc_gallery_path")
+            Write-Host("Uploading nupkg files to share '$module_share_name' under path '$module_share_subfolder' ...")
+            az storage file upload-batch `
+                --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+                --account-name $storage_account_name `
+                --destination $module_share_name `
+                --destination-path $module_share_subfolder `
+                --source $module_local_gallery_dir `
+                --backup-intent `
+                --auth-mode 'login'
+            Write-Host("Upload complete. UNC gallery path will be: $module_unc_gallery_path")
+            # Uninstall any pre-existing copy of the module so later tests start clean
+            Remove-Module -Name $module_name -Force -ErrorAction SilentlyContinue
+            if (Get-Module -Name $module_name -ListAvailable) {
+                Uninstall-Module -Name $module_name -AllVersions -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host("Ensured $module_name is not installed before UNC tests begin")
+        }
+        It "should not have $module_name module available before registering UncTempGallery" {
+            Get-Module -Name $module_name -ListAvailable | Should -BeNullOrEmpty
+        }
+        It "should not have Get-Greeting command available before install" {
+            Get-Command 'Get-Greeting' -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        }
+        Describe "After registering UncTempGallery and installing the module" {
+            BeforeAll {
+                try { Unregister-PSRepository -Name $module_unc_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+                Register-PSRepository `
+                    -Name $module_unc_gallery_nickname `
+                    -SourceLocation $module_unc_gallery_path `
+                    -PublishLocation $module_unc_gallery_path `
+                    -InstallationPolicy 'Trusted'
+                Write-Host("Registered $module_unc_gallery_nickname at: $module_unc_gallery_path")
+                Install-Module `
+                    -Name $module_name `
+                    -Repository $module_unc_gallery_nickname `
+                    -Force `
+                    -Scope 'CurrentUser' `
+                    -SkipPublisherCheck
+                Import-Module $module_name -Force
+                Write-Host("Installed and imported $module_name from $module_unc_gallery_nickname")
+            }
+            It "should find $module_name in UncTempGallery with the expected version" {
+                $found = Find-Module -Name $module_name -Repository $module_unc_gallery_nickname
+                $found | Should -Not -BeNullOrEmpty
+                # Cast to [System.Version] for comparison since it normalises leading zeros (e.g. "0226" -> 226)
+                $found.Version | Should -Be ([System.Version]$module_build_version)
+            }
+            It "should have Get-Greeting command available after installing from UncTempGallery" {
+                Get-Command 'Get-Greeting' -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+            }
+            It "should run Get-Greeting without throwing" {
+                { Get-Greeting } | Should -Not -Throw
+            }
+            AfterAll {
+                try { Unregister-PSRepository -Name $module_unc_gallery_nickname -ErrorAction SilentlyContinue } catch {}
+                Write-Host("Unregistered $module_unc_gallery_nickname")
+            }
+        }
+        AfterAll {
+            # Uninstall the module and verify functions are gone
+            Remove-Module -Name $module_name -Force -ErrorAction SilentlyContinue
+            if (Get-Module -Name $module_name -ListAvailable) {
+                Uninstall-Module -Name $module_name -AllVersions -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host("Uninstalled $module_name")
+            if (Get-Command 'Get-Greeting' -ErrorAction SilentlyContinue) {
+                Write-Warning("Get-Greeting still present after uninstall!")
+            } else {
+                Write-Host("Confirmed: Get-Greeting command is gone")
+            }
+            # Remove the share gallery subfolder via UNC
+            if (Test-Path $module_unc_gallery_path) {
+                Remove-Item -Path $module_unc_gallery_path -Recurse -Force
+                Write-Host("Removed UNC gallery subfolder: $module_unc_gallery_path")
+            }
+            # Clean up local temp dirs
+            if (Test-Path $module_build_output_dir) { Remove-Item $module_build_output_dir -Recurse -Force }
+            if (Test-Path $module_local_gallery_dir) { Remove-Item $module_local_gallery_dir -Recurse -Force }
+            $module_build_version = $null
+            $module_name = $null
+            $module_source_psd1 = $null
+            $module_build_output_dir = $null
+            $module_local_gallery_dir = $null
+            $module_share_subfolder = $null
+            $module_local_gallery_nickname = $null
+            $module_unc_gallery_nickname = $null
+            $module_unc_gallery_path = $null
+            $module_share_name = $null
+            Write-Host("Finished module build/publish/install test cleanup")
+        }
+    }
     AfterAll {
-        net use $net_use_drive_letter /delete
+        if ($net_use_drive_letter) {
+            net use $net_use_drive_letter /delete
+        }
+        if ($net_use_server) {
+            cmdkey /delete:$net_use_server 2>$null | Out-Null
+        }
         $net_use_drive_letter = $null
+        $net_use_server = $null
         $net_use_output = $null
         $tfstate_file = $null
         $gallery_path = $null
