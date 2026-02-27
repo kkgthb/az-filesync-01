@@ -11,30 +11,14 @@ resource "azurerm_storage_account" "my_sa" {
   min_tls_version               = "TLS1_2"
   public_network_access_enabled = true
   is_hns_enabled                = false
-  #   azure_files_authentication {
-  #     directory_type = "AADKERB" # For Entra ID DS (hybrid join)
-  #     active_directory {
-  #       storage_sid         = var.storage_sid         # Your AD DS SID
-  #       domain_name         = var.domain_name         # Your AD DS domain
-  #       netbios_domain_name = var.netbios_domain_name # Your NetBIOS domain
-  #       forest_name         = var.forest_name         # Your AD DS forest
-  #       domain_guid         = var.domain_guid         # Your AD DS domain GUID
-  #       azure_storage_sid   = var.azure_storage_sid   # Your Azure Storage SID
-  #     }
-  #   }
 }
 
-# # Tweak Azure Storage Account
-# resource "null_resource" "enable_files_aad_auth" {
-#   provisioner "local-exec" {
-#     command = "az storage account update --name ${azurerm_storage_account.my_sa.name} --resource-group ${azurerm_storage_account.my_sa.resource_group_name} --subscription ${data.azurerm_client_config.current_azrm_config.subscription_id} --enable-files-aadds true"
-#   }
-#   depends_on = [azurerm_storage_account.my_sa]
-# }
-# resource "time_sleep" "wait_for_aad_auth" {
-#   create_duration = "120s"
-#   depends_on      = [null_resource.enable_files_aad_auth]
-# }
+# Throw a simple access key into GitHub Actions secrets
+resource "github_actions_secret" "gh_secret_stor_acct_write_key" {
+  repository      = var.current_gh_repo
+  secret_name     = "AZ_STOR_ACCT_WRITE_KEY"
+  plaintext_value = azurerm_storage_account.my_sa.primary_access_key
+}
 
 # Grant myself adequate permissions over the storage account (required to play with file CRUD)
 resource "azurerm_role_assignment" "myself_as_data_privileged_contributor" {
