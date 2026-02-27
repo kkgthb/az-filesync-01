@@ -43,6 +43,12 @@ resource "azurerm_role_assignment" "myself_as_data_privileged_contributor" {
   principal_id         = data.azurerm_client_config.current_azrm_config.object_id
 }
 
+resource "github_actions_variable" "gh_var_storacct_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_STORACCT_NAME"
+  value         = azurerm_storage_account.my_sa.name
+}
+
 # Azure File Share
 resource "azurerm_storage_share" "my_safs" {
   name               = "${var.workload_nickname}storacctfs"
@@ -53,17 +59,16 @@ resource "azurerm_storage_share" "my_safs" {
   #   depends_on         = [time_sleep.wait_for_aad_auth]
 }
 
+resource "github_actions_variable" "gh_var_sharepath_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_SHARE_NAME"
+  value         = azurerm_storage_share.my_safs.name
+}
+
 resource "github_actions_variable" "gh_var_storacct_sharepath" {
   repository    = var.current_gh_repo
   variable_name = "THE_STORACCT_SHAREPATH"
   value         = "\\\\${azurerm_storage_account.my_sa.name}.file.core.windows.net\\${azurerm_storage_share.my_safs.name}"
-}
-
-# Grant myself adequate permissions over the storage account file share (required to play with file CRUD)
-resource "azurerm_role_assignment" "myself_as_data_smb_contributor" {
-  role_definition_name = "Storage File Data SMB Share Contributor"
-  scope                = azurerm_storage_share.my_safs.id
-  principal_id         = data.azurerm_client_config.current_azrm_config.object_id
 }
 
 # # # Azure Storage Sync Service
