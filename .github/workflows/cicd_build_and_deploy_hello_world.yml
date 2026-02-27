@@ -1,0 +1,33 @@
+name: "Build and publish HelloWorld module"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  suggest_version:
+    uses: ./.github/workflows/callable_suggest_version_number_from_sysdate.yml
+
+  build:
+    needs: suggest_version
+    uses: ./.github/workflows/callable_build_module_and_cache_as_artifact.yml
+    with:
+      versionNumber: ${{ needs.suggest_version.outputs.suggested_version_number }}
+      pipelineArtifactName: "MyBuiltHelloWorldModule"
+
+  publish_nupkg:
+    needs: build
+    uses: ./.github/workflows/callable_publish_module_to_cicd_artifact.yml
+    with:
+      pipelineArtifactName: "MyBuiltHelloWorldModule"
+      nupkgArtifactName: "MyHelloWorldNupkg"
+
+  upload_to_storage:
+    needs: publish_nupkg
+    uses: ./.github/workflows/callable_upload_nupkg_to_azure_storage.yml
+    with:
+      nupkgArtifactName: "MyHelloWorldNupkg"
+    secrets:
+      AZ_STOR_ACCT_WRITE_KEY: ${{ secrets.AZ_STOR_ACCT_WRITE_KEY }}

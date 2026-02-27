@@ -1,0 +1,50 @@
+on:
+  workflow_call:
+    inputs:
+      versionNumber:
+        description: "Version number"
+        type: "string"
+        required: true
+      pipelineArtifactName:
+        description: 'Name you would like to give the GitHub Actions artifact containing your built PSD1 and PSM1 files (default is "cicd_build_output").'
+        type: "string"
+        required: false
+        default: "cicd_build_output"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Check out module source from kkgthb/powershell-module-01-tiny"
+        uses: actions/checkout@v6
+        with:
+          repository: "kkgthb/powershell-module-01-tiny"
+          ref: "main"
+          path: "cicd_source"
+
+      - name: "Install ModuleBuilder from PSGallery"
+        id: "install_modulebuilder"
+        shell: "pwsh"
+        run: |
+          Install-Module `
+            -Name 'ModuleBuilder' `
+            -Repository 'PSGallery' `
+            -Scope CurrentUser `
+            -Force
+
+      - name: "Run ModuleBuilder"
+        id: "run_modulebuilder"
+        shell: "pwsh"
+        run: |
+          Build-Module `
+            -SourcePath "${{ github.workspace }}/cicd_source/src/all_my_modules/HelloWorld" `
+            -OutputDirectory "${{ runner.temp }}/cicd_build_output" `
+            -VersionedOutputDirectory `
+            -Version "${{ inputs.versionNumber }}"
+
+      - name: "Publish build-artifact from staging directory to named artifact"
+        id: "cache_built_module_as_named_pipeline_artifact"
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.pipelineArtifactName }}
+          path: ${{ runner.temp }}/cicd_build_output

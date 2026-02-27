@@ -1,0 +1,38 @@
+on:
+  workflow_call:
+    inputs:
+      nupkgArtifactName:
+        description: 'Name of the GitHub Actions artifact containing the .nupkg file (default is "cicd_nupkg_output").'
+        type: "string"
+        required: false
+        default: "cicd_nupkg_output"
+      shareSubfolderPath:
+        description: 'Subfolder within the Azure Files share under which to publish .nupkg files (default is "ps-modules-gallery").'
+        type: "string"
+        required: false
+        default: "ps-modules-gallery"
+    secrets:
+      AZ_STOR_ACCT_WRITE_KEY:
+        required: true
+
+jobs:
+  upload_to_azure_storage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Fetch .nupkg artifact from pipeline cache"
+        id: "fetch_nupkg"
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.nupkgArtifactName }}
+          path: ${{ runner.temp }}/cicd_nupkg
+
+      - name: "Upload .nupkg files to Azure Files share"
+        id: "upload_nupkg"
+        shell: "bash"
+        run: |
+          az storage file upload-batch \
+            --account-name "${{ vars.THE_STORACCT_NAME }}" \
+            --destination "${{ vars.THE_SHARE_NAME }}" \
+            --destination-path "${{ inputs.shareSubfolderPath }}" \
+            --source "${{ runner.temp }}/cicd_nupkg" \
+            --account-key "${{ secrets.AZ_STOR_ACCT_WRITE_KEY }}"

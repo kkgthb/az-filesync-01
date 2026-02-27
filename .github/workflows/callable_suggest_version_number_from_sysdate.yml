@@ -1,0 +1,39 @@
+on:
+  workflow_call:
+    outputs:
+      suggested_version_number:
+        description: "Suggested version number derived from the current UTC date and time."
+        value: ${{ jobs.suggest_job.outputs.suggested_version_number }}
+jobs:
+  suggest_job:
+    runs-on: ubuntu-latest
+    outputs:
+      suggested_version_number: ${{ steps.suggest.outputs.suggested_version_number }}
+    steps:
+      - id: "suggest"
+        name: 'See your new "suggested version number" variable available as output from this job.'
+        shell: "pwsh"
+        run: |
+          $current_date = Get-Date -AsUTC
+          $suggestion = [String][Version]::New(
+              $null, `
+                  $null, `
+                  $current_date.ToString('yyyyMMdd'), `
+                  '9' + $current_date.ToString('hhmmssff')
+          )
+          echo "suggested_version_number=$suggestion" >> $env:GITHUB_OUTPUT
+
+# ####################################
+# Notes:
+#
+# At the time this was written, PoshCode/ModuleBuilder's Build-Module function
+# expected a [Version]-compatible string, not a [SemVer]-compatible string.
+#
+# Leading 9 is arbitrary integer just to make sure not a leading zero.
+# "ff" is as far as we can go in timestamp formatting
+# without getting an [Int32] conversion error out of ModuleBuilder.
+#
+# Per https://github.com/puscasu-ion-daniel/azure-devops-docs/blob/1d67a1d/docs/pipelines/process/set-variables-scripts.md,
+# you have to make sure you don't put any whitespace around the ";isoutput=true."
+# Otherwise it won't properly set the variable the way you thought you named it.
+# ####################################

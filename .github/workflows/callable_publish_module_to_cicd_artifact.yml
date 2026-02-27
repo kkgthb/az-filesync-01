@@ -1,0 +1,84 @@
+on:
+  workflow_call:
+    inputs:
+      pipelineArtifactName:
+        description: 'Name you gave the GitHub Actions artifact containing your built PSD1 and PSM1 files (default is "cicd_build_output").'
+        type: "string"
+        required: false
+        default: "cicd_build_output"
+      nupkgArtifactName:
+        description: 'Name you would like to give the GitHub Actions artifact containing the .nupkg file (default is "cicd_nupkg_output").'
+        type: "string"
+        required: false
+        default: "cicd_nupkg_output"
+
+jobs:
+  publish_to_local_gallery:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Fetch built module from cache back into local folder"
+        id: "fetch_built_module"
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.pipelineArtifactName }}
+          path: ${{ runner.temp }}/cicd_built_module
+
+      - name: "Install preview PSResourceGet"
+        id: "install_preview_psresourceget"
+        shell: "pwsh"
+        run: |
+          Install-Module `
+            -Name 'Microsoft.PowerShell.PSResourceGet' `
+            -Repository 'PSGallery' `
+            -Scope CurrentUser `
+            -AllowPrerelease `
+            -Force
+
+      - name: "Create local gallery folder"
+        id: "create_local_gallery_folder"
+        shell: "pwsh"
+        run: |
+          New-Item -ItemType Directory -Path "${{ runner.temp }}/local_ps_gallery" -Force
+
+      - name: "Register local PowerShell gallery"
+        id: "register_gallery"
+        shell: "pwsh"
+        run: |
+          Register-PSResourceRepository `
+            -Name "local_gallery" `
+            -Uri "${{ runner.temp }}/local_ps_gallery" `
+            -Trusted
+
+      - name: "Publish module to local gallery"
+        id: "publish_module"
+        shell: "pwsh"
+        run: |
+          $directories_to_publish = (
+            (
+              (
+                Get-ChildItem `
+                  -Path "${{ runner.temp }}/cicd_built_module" `
+                  -Filter '*.psd1' `
+                  -Recurse `
+                  -File
+              ) `
+              | ForEach-Object {
+                [System.IO.Path]::GetDirectoryName($_)
+              }
+            ) `
+            | Get-Unique
+          )
+          $directories_to_publish | ForEach-Object {
+            Write-Output("Publishing $_")
+            Publish-PSResource `
+              -Path $_ `
+              -Repository "local_gallery" `
+              -Verbose
+          }
+
+      - name: "Publish .nupkg as pipeline artifact"
+        id: "cache_nupkg_as_named_pipeline_artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.nupkgArtifactName }}
+          path: ${{ runner.temp }}/local_ps_gallery/**/*.nupkg
