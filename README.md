@@ -6,7 +6,7 @@ In other words, a publicly networked generic CI/CD pipeline like a GitHub Action
 
 _(It could still also `Publish-PSResource` into Azure Container Registry, though, as a treat.  Doing a dual-publish after build -- one into a next-gen registry and another into a legacy registry -- could help ensure that both older systems and newer systems can find a usable registry **somewhere**.  Other public cloud infrastructure resources like other CI/CD pipelines or like Azure Automation Account Runbooks would probably do better trying to run `Register-PSRepository` or `RegisterPSResourceRepository` against a newer-style PowerShell gallery hosted on publicly networked cloud-native infrasturcture, though, since they too would probably encounter the same network/technology/etc. line-of-sight issue against a CIFS fileshare that publication into CIFS fileshare presented.)_
 
-* Note to future self:  One of my favorite parts of this codebase is in my Terraform resource definition for a `foreach-typed` [`azurerm_storage_sync_server_endpoint` named `my_ssseps`](.prereqs/AA-tf/modules/cloud_storage_and_share/main.tf).
+* Note to future self:  One of my favorite parts of this codebase is in my Terraform resource definition for a `foreach`-typed [`azurerm_storage_sync_server_endpoint` named `my_ssseps`](.prereqs/AA-tf/modules/cloud_storage_and_share/main.tf).
     * Haven't run `Register-AzStorageSyncServer -ResourceGroupName 'rg_goes_here' -StorageSyncServiceName 'sss_goes_here` from your VM just yet?
         * No problem; Terraform will just pick up that there are 0 "registered servers" attached to the Storage Sync Service and provision 0 Storage Sync Server Endpoints.
     * Finally got around to running `Register-AzStorageSyncServer`?
