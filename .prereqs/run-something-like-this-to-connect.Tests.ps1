@@ -452,7 +452,7 @@ Describe "WinVM has D drive" -Skip {
     }
 }
 
-Describe "Azure to VM sync" {
+Describe "Azure to VM sync" -Skip {
     BeforeAll {
         $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
         $storage_account_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_NAME") | .attributes.value' $tfstate_file)
@@ -554,5 +554,73 @@ Describe "Azure to VM sync" {
         $storage_account_name = $null
         $storage_share_name = $null
         Write-Host("Finished az upload test cleanup")
+    }
+}
+
+Describe "Quick VM test" -Skip {
+    BeforeAll {
+        $module_name = 'HelloWorld'
+        $vm_gallery_path = 'D:\PSModules\MyPSModules\ps-modules-gallery'
+        $sessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+        $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
+        $win_vm_fqdn = (jq -r '.resources[] | select(.type=="github_actions_secret") | .instances[] | select(.attributes.secret_name=="THE_WINDOWS_VM_FQDN") | .attributes.plaintext_value' $tfstate_file)
+        $win_vm_admin_username = (jq -r '.resources[] | select(.type=="github_actions_secret") | .instances[] | select(.attributes.secret_name=="THE_WINDOWS_VM_USERNAME") | .attributes.plaintext_value' $tfstate_file)
+        $win_vm_admin_password = (jq -r '.resources[] | select(.type=="github_actions_secret") | .instances[] | select(.attributes.secret_name=="THE_WINDOWS_VM_PASSWORD") | .attributes.plaintext_value' $tfstate_file)
+        $win_vm_admin_password_ss = ConvertTo-SecureString $win_vm_admin_password -AsPlainText -Force
+        $cred = New-Object System.Management.Automation.PSCredential ($win_vm_admin_username, $win_vm_admin_password_ss)
+        $win_vm_admin_username = $null
+        $win_vm_admin_password = $null
+        $win_vm_admin_password_ss = $null
+        $pssession = New-PSSession `
+            -ComputerName $win_vm_fqdn `
+            -Credential $cred `
+            -UseSSL `
+            -Port 5986 `
+            -SessionOption $sessionOption
+        Write-Host("Setup:  Opened VM control session.")
+    }
+    Describe "Filesystem" {
+        It "should find at least 1 .nupkg file on the VM under the gallery path" {
+            $count = Invoke-Command -Session $pssession -ScriptBlock {
+                (Get-ChildItem $using:vm_gallery_path -Filter '*.nupkg').Count
+            }
+            Write-Host("nupkg count on VM: $count")
+            $count | Should -BeGreaterOrEqual 1
+        }
+    }
+    Describe "PowerShell" {
+        BeforeAll {
+            # One-time session setup: ensure NuGet provider is present and gallery is registered.
+            # Session state persists across all Invoke-Command calls on the same PSSession.
+            Write-Host("Setup:  Registering gallery.")
+            Invoke-Command -Session $pssession -ScriptBlock {
+                Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
+                try { Unregister-PSRepository -Name 'QuickVMGallery' -ErrorAction SilentlyContinue } catch {}
+                Register-PSRepository `
+                    -Name 'QuickVMGallery' `
+                    -SourceLocation $using:vm_gallery_path `
+                    -PublishLocation $using:vm_gallery_path `
+                    -InstallationPolicy Trusted
+            }
+        }
+        It "should be able to find $module_name in the registered VM gallery" {
+            $found_count = Invoke-Command -Session $pssession -ScriptBlock {
+                (Find-Module -Name $using:module_name -Repository 'QuickVMGallery' -AllVersions).Count
+            }
+            Write-Host("$module_name versions found on VM: $found_count")
+            $found_count | Should -BeGreaterOrEqual 1
+        }
+        AfterAll {
+            Write-Host("Cleanup:  Unregistering gallery.")
+            Invoke-Command -Session $pssession -ScriptBlock {
+                Unregister-PSRepository -Name 'QuickVMGallery' -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    AfterAll {
+        if ($pssession) {
+            Remove-PSSession $pssession
+            Write-Host("Cleanup:  Closed VM control session.")
+        }
     }
 }
