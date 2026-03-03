@@ -14,3 +14,11 @@ variable "workload_nickname" {
 variable "current_gh_repo" {
   type = string
 }
+
+variable "custom_role_definition_name" {
+  type = string
+}
+
+variable "sss_id" {
+  type = string
+}

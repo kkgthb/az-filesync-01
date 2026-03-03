@@ -451,3 +451,101 @@ Describe "WinVM has D drive" -Skip {
         | Should -Match '^D:\s+Temporary Storage\s+'
     }
 }
+
+Describe "Azure to VM sync" {
+    BeforeAll {
+        $tfstate_file = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, 'AA-tf', 'terraform.tfstate'))
+        $storage_account_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_STORACCT_NAME") | .attributes.value' $tfstate_file)
+        $storage_share_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_SHARE_NAME") | .attributes.value' $tfstate_file)
+        $az_upload_test_subfolder = 'az-upload-test'
+        $az_upload_test_filename = "az-rest-upload-$(Get-Date -Format 'yyyyMMddHHmmss').txt"
+        $az_upload_local_dir = Join-Path $env:TEMP 'az-upload-test-source'
+        New-Item -ItemType Directory -Force -Path $az_upload_local_dir | Out-Null
+        $az_upload_local_file = Join-Path $az_upload_local_dir $az_upload_test_filename
+        Set-Content -Path $az_upload_local_file -Value "Uploaded via az storage file upload-batch at $(Get-Date -Format 'o')" -Force
+        az storage file upload-batch `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --account-name $storage_account_name `
+            --destination $storage_share_name `
+            --destination-path $az_upload_test_subfolder `
+            --source $az_upload_local_dir `
+            --backup-intent `
+            --auth-mode 'login'
+        Write-Host("REST upload complete; expecting file at share subfolder '$az_upload_test_subfolder/$az_upload_test_filename'")
+    }
+    It "should see the uploaded file in the Azure Files share subfolder (az CLI CRUD 101 spot-check)" {
+        $found_filename = az storage file show `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --account-name $storage_account_name `
+            --share-name $storage_share_name `
+            --path "$az_upload_test_subfolder/$az_upload_test_filename" `
+            --backup-intent `
+            --auth-mode 'login' `
+            --query 'name' `
+            --output 'tsv'
+        Write-Host("AZ CLI file check: found file named '$found_filename'")
+        $found_filename | Should -Not -BeNullOrEmpty
+        $found_filename | Should -Be $az_upload_test_filename
+    }
+    It "should see the file in the VM hard drive after triggering sync" {
+        $sss_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_SSS_NAME") | .attributes.value' $tfstate_file)
+        $ssgrp_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_SG_NAME") | .attributes.value' $tfstate_file)
+        $ssclep_name = (jq -r '.resources[] | select(.type=="github_actions_variable") | .instances[] | select(.attributes.variable_name=="THE_CEP_NAME") | .attributes.value' $tfstate_file)
+        $vm_file_path = "D:\PSModules\MyPSModules\$az_upload_test_subfolder\$az_upload_test_filename"
+        Write-Host("Triggering Azure File Sync change detection ...")
+        az storagesync sync-group cloud-endpoint trigger-change-detection `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --resource-group "$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))-rg-demo" `
+            --storage-sync-service $sss_name `
+            --sync-group-name $ssgrp_name `
+            --name $ssclep_name
+        # Poll the VM for the file, up to 5 minutes
+        $found = $false
+        $deadline = (Get-Date).AddMinutes(5)
+        while ((Get-Date) -lt $deadline) {
+            $check_result = ( `
+                    az vm run-command invoke `
+                    --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+                    --resource-group "$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))-rg-demo" `
+                    --name "$("$([Environment]::GetEnvironmentVariable('DEMOS_my_workload_nickname', 'User'))")WinVm" `
+                    --command-id 'RunPowerShellScript' `
+                    --scripts @("if (Test-Path '$vm_file_path') { 'FOUND' } else { 'NOTFOUND' }") `
+            ) `
+            | ConvertFrom-Json `
+            | Select-Object -Property 'value' -ExpandProperty 'value' `
+            | Where-Object { $_.code -eq 'ComponentStatus/StdOut/succeeded' } `
+            | Select-Object -First 1 `
+            | Select-Object -Property 'message' -ExpandProperty 'message'
+            $check_result = $check_result.Trim()
+            Write-Host("VM file check: $check_result")
+            if ($check_result -eq 'FOUND') {
+                $found = $true
+                break
+            }
+            Start-Sleep -Seconds 15
+        }
+        $found | Should -BeTrue
+    }
+    AfterAll {
+        # Clean up the test subfolder in the Azure Files share
+        az storage file delete-batch `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --account-name $storage_account_name `
+            --source $storage_share_name `
+            --pattern "$az_upload_test_subfolder/*" `
+            --auth-mode 'login' `
+            --backup-intent
+        # Clean up local temp source dir
+        if (Test-Path $az_upload_local_dir) {
+            Remove-Item -Path $az_upload_local_dir -Recurse -Force
+        }
+        $az_upload_test_subfolder = $null
+        $az_upload_test_filename = $null
+        $az_upload_local_dir = $null
+        $az_upload_local_file = $null
+        $tfstate_file = $null
+        $storage_account_name = $null
+        $storage_share_name = $null
+        Write-Host("Finished az upload test cleanup")
+    }
+}

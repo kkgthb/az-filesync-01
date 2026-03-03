@@ -30,7 +30,7 @@ resource "azurerm_windows_virtual_machine" "my_vm" {
   admin_password = random_password.admin_pw.result
 
   identity {
-    type         = "UserAssigned"
+    type         = "SystemAssigned, UserAssigned"
     identity_ids = [var.umi_id]
   }
 
@@ -75,4 +75,16 @@ resource "github_actions_secret" "gh_scrt_vm_winrm_pw" {
   # Note:  I'm not sure if plaintext_value would be secure enough for production, but 
   # this is just throwaway infrastructure I keep destroying between runs anyway, and my 
   # Terraform state file is secured.
+}
+
+# Grant the VM adequate permissions over the storage sync service to register a server
+resource "azurerm_role_assignment" "smi_as_sync_registrar" {
+  role_definition_name = var.custom_role_definition_name
+  scope                = var.sss_id
+  principal_id         = azurerm_windows_virtual_machine.my_vm.identity[0].principal_id
+}
+resource "azurerm_role_assignment" "umi_as_sync_registrar" {
+  role_definition_name = var.custom_role_definition_name
+  scope                = var.sss_id
+  principal_id         = var.umi_principal_id
 }

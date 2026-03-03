@@ -13,11 +13,18 @@ resource "azurerm_storage_account" "my_sa" {
   is_hns_enabled                = false
 }
 
-# Throw a simple access key into GitHub Actions secrets
-resource "github_actions_secret" "gh_secret_stor_acct_write_key" {
-  repository      = var.current_gh_repo
-  secret_name     = "AZ_STOR_ACCT_WRITE_KEY"
-  plaintext_value = azurerm_storage_account.my_sa.primary_access_key
+# # Throw a simple access key into GitHub Actions secrets
+# resource "github_actions_secret" "gh_secret_stor_acct_write_key" {
+#   repository      = var.current_gh_repo
+#   secret_name     = "AZ_STOR_ACCT_WRITE_KEY"
+#   plaintext_value = azurerm_storage_account.my_sa.primary_access_key
+# }
+
+# Grant CI/CD service principal permissions to upload files to the storage account
+resource "azurerm_role_assignment" "cicd_as_data_privileged_contributor" {
+  role_definition_name = "Storage File Data Privileged Contributor"
+  scope                = azurerm_storage_account.my_sa.id
+  principal_id         = var.cicd_service_principal_object_id
 }
 
 # Grant myself adequate permissions over the storage account (required to play with file CRUD)
@@ -160,3 +167,83 @@ resource "azurerm_storage_sync_cloud_endpoint" "my_ssclep" {
     azurerm_role_assignment.sync_as_reader_and_data_access_to_sa,
   ]
 }
+
+# Azure Storage Sync registered server if exists
+data "azapi_resource_list" "my_sssrs_if_exists" {
+  type      = "Microsoft.StorageSync/storageSyncServices/registeredServers@2022-09-01"
+  parent_id = azapi_resource.my_sss.id
+}
+locals {
+  existing_registered_servers = try(data.azapi_resource_list.my_sssrs_if_exists.output.value, [])
+}
+
+# Azure Storage Sync Server Endpoint(s) if registered server(s) exist(s)
+resource "azurerm_storage_sync_server_endpoint" "my_ssseps" {
+  for_each = {
+    for server in local.existing_registered_servers :
+    server.name => server
+  }
+  name                  = "${var.workload_nickname}sssvep${each.value.name}"
+  registered_server_id  = each.value.id
+  storage_sync_group_id = azurerm_storage_sync_group.my_ssgrp.id
+  server_local_path     = "D:\\PSModules\\MyPSModules"
+  cloud_tiering_enabled = false
+  depends_on = [
+    azurerm_storage_sync_cloud_endpoint.my_ssclep,
+  ]
+}
+
+# Another custom role
+resource "azurerm_role_definition" "my_trigger_custom_role" {
+  name        = "Storage Sync Service Change Detection TriggerRunner (custom)"
+  scope       = var.resource_group.id
+  description = "Allows kicking off a change detection trigger for an Azure File Sync"
+  permissions {
+    actions = [
+      "Microsoft.StorageSync/storageSyncServices/syncGroups/cloudEndpoints/triggerChangeDetection/action"
+    ]
+    not_actions      = []
+    data_actions     = []
+    not_data_actions = []
+  }
+  assignable_scopes = [
+    var.resource_group.id
+  ]
+}
+
+# Grant myself adequate permissions to kick off syncs (normally just a CI/CD pipeline would need it)
+resource "azurerm_role_assignment" "myself_as_sync_change_trigerrer" {
+  role_definition_name = azurerm_role_definition.my_trigger_custom_role.name
+  scope                = azapi_resource.my_sss.output.id
+  principal_id         = data.azurerm_client_config.current_azrm_config.object_id
+}
+
+# Grant CI/CD service principal permissions to trigger change detection
+resource "azurerm_role_assignment" "cicd_as_sync_change_triggerer" {
+  role_definition_name = azurerm_role_definition.my_trigger_custom_role.name
+  scope                = azapi_resource.my_sss.output.id
+  principal_id         = var.cicd_service_principal_object_id
+}
+
+# Cache sync service details to GitHub Actions variables for the change detection trigger step
+resource "github_actions_variable" "gh_var_resource_group_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_RG_NAME"
+  value         = var.resource_group.name
+}
+resource "github_actions_variable" "gh_var_sss_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_SSS_NAME"
+  value         = azapi_resource.my_sss.name
+}
+resource "github_actions_variable" "gh_var_ssgrp_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_SG_NAME"
+  value         = azurerm_storage_sync_group.my_ssgrp.name
+}
+resource "github_actions_variable" "gh_var_ssclep_name" {
+  repository    = var.current_gh_repo
+  variable_name = "THE_CEP_NAME"
+  value         = azurerm_storage_sync_cloud_endpoint.my_ssclep.name
+}
+

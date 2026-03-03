@@ -10,3 +10,6 @@ variable "workload_nickname" {
 variable "current_gh_repo" {
   type = string
 }
+variable "entra_appreg_name_idea" {
+  type = string
+}

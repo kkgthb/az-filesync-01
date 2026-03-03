@@ -14,3 +14,8 @@ variable "workload_nickname" {
 variable "current_gh_repo" {
   type = string
 }
+
+variable "cicd_service_principal_object_id" {
+  type        = string
+  description = "Object ID of the CI/CD service principal, for RBAC assignments over the storage account and sync service."
+}

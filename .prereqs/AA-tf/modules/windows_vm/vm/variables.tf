@@ -19,6 +19,10 @@ variable "umi_id" {
   type = string
 }
 
+variable "umi_principal_id" {
+  type = string
+}
+
 variable "winrm_kv_id" {
   type = string
 }
@@ -36,5 +40,13 @@ variable "fqdn" {
 }
 
 variable "current_gh_repo" {
+  type = string
+}
+
+variable "custom_role_definition_name" {
+  type = string
+}
+
+variable "sss_id" {
   type = string
 }
