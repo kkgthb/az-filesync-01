@@ -535,6 +535,13 @@ Describe "Azure to VM sync" {
             --pattern "$az_upload_test_subfolder/*" `
             --auth-mode 'login' `
             --backup-intent
+        az storage directory delete `
+            --subscription "$([Environment]::GetEnvironmentVariable('DEMOS_my_azure_subscription_id', 'User'))" `
+            --account-name $storage_account_name `
+            --share-name $storage_share_name `
+            --name $az_upload_test_subfolder `
+            --auth-mode 'login' `
+            --backup-intent
         # Clean up local temp source dir
         if (Test-Path $az_upload_local_dir) {
             Remove-Item -Path $az_upload_local_dir -Recurse -Force
