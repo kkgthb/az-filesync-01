@@ -3,7 +3,7 @@ data "azuread_client_config" "current_azad_config" {}
 resource "github_actions_secret" "gh_var_entra_tenant_id" {
   repository      = var.current_gh_repo
   secret_name     = "ENTRA_TENANT_ID"
-  plaintext_value = data.azuread_application.cicd_app.client_id
+  plaintext_value = data.azuread_client_config.current_azad_config.tenant_id
 }
 
 # Look up the existing Entra App Registration by display name

@@ -12,7 +12,13 @@ on:
         required: false
         default: "ps-modules-gallery"
     secrets:
-      AZ_STOR_ACCT_WRITE_KEY:
+      ENTRA_TENANT_ID:
+        required: true
+      ENTRA_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      ENTRA_CLIENT_SECRET:
         required: true
 
 jobs:
@@ -26,13 +32,48 @@ jobs:
           name: ${{ inputs.nupkgArtifactName }}
           path: ${{ runner.temp }}/cicd_nupkg
 
+      - name: "Log in to Azure"
+        id: "az_login"
+        uses: "azure/login@v2"
+        with:
+          creds: '{"clientId":"${{ secrets.ENTRA_CLIENT_ID }}","clientSecret":"${{ secrets.ENTRA_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.ENTRA_TENANT_ID }}"}'
+
       - name: "Upload .nupkg files to Azure Files share"
         id: "upload_nupkg"
-        shell: "bash"
+        shell: "pwsh"
         run: |
-          az storage file upload-batch \
-            --account-name "${{ vars.THE_STORACCT_NAME }}" \
-            --destination "${{ vars.THE_SHARE_NAME }}" \
-            --destination-path "${{ inputs.shareSubfolderPath }}" \
-            --source "${{ runner.temp }}/cicd_nupkg" \
-            --account-key "${{ secrets.AZ_STOR_ACCT_WRITE_KEY }}"
+          az storage file upload-batch `
+            --account-name "${{ vars.THE_STORACCT_NAME }}" `
+            --destination "${{ vars.THE_SHARE_NAME }}" `
+            --destination-path "${{ inputs.shareSubfolderPath }}" `
+            --source "${{ runner.temp }}/cicd_nupkg" `
+            --auth-mode login `
+            --backup-intent
+
+      - name: "Trigger Azure File Sync change detection"
+        id: "trigger_change_detection"
+        shell: "pwsh"
+        run: |
+          $rg  = "${{ vars.THE_RG_NAME }}"
+          $sss = "${{ vars.THE_SSS_NAME }}"
+          $sg  = "${{ vars.THE_SG_NAME }}"
+          $cep = "${{ vars.THE_CEP_NAME }}"
+          if (-not $rg -or -not $sss -or -not $sg -or -not $cep) {
+            Write-Host "One or more sync vars are unset; skipping change detection trigger invocation."
+            exit 0
+          }
+          az storagesync sync-group cloud-endpoint show `
+            --resource-group $rg `
+            --storage-sync-service $sss `
+            --sync-group-name $sg `
+            --name $cep `
+            --output none 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Cloud endpoint not found in Azure; skipping change detection trigger invocation."
+            exit 0
+          }
+          az storagesync sync-group cloud-endpoint trigger-change-detection `
+            --resource-group $rg `
+            --storage-sync-service $sss `
+            --sync-group-name $sg `
+            --name $cep

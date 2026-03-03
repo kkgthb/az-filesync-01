@@ -1,9 +1,9 @@
 name: "Build and publish HelloWorld module"
 
 on:
-  # push:
-  #   branches:
-  #     - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -30,4 +30,7 @@ jobs:
     with:
       nupkgArtifactName: "MyHelloWorldNupkg"
     secrets:
-      AZ_STOR_ACCT_WRITE_KEY: ${{ secrets.AZ_STOR_ACCT_WRITE_KEY }}
+      ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+      ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+      ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
